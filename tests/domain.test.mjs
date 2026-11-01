@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { seed,emptyState,apply,risks,reserved,total,overlap } from '../lib/domain.ts';
+const approval={name:'테스트 고객',evidence:'2026-11-01 전화 승인'};
+function ready(){
+ let s=apply(emptyState(),{type:'create',customer:'검증 현장',phone:'010-0000-0000',address:'가상 주소',title:'배관 교체'});const jobId=s.jobs[0].id;
+ const act=(a)=>{s=apply(s,{jobId,...a});return s;};
+ act({type:'survey',notes:'15A 누수 확인'});act({type:'quote',amount:100000});act({type:'approve',...approval});
+ return {get s(){return s;},jobId,act};
+}
+test('예시 데이터에서 네 가지 위험을 정확히 탐지',()=>assert.deepEqual(risks(seed()).map(x=>x.type).sort(),['승인','일정','자재','청구'].sort()));
+test('추가 작업 승인 누락 금액 180,000원',()=>assert.equal(risks(seed()).find(x=>x.type==='승인').amount,180000));
+test('승인된 추가 작업의 청구 누락 90,000원',()=>assert.equal(risks(seed()).find(x=>x.type==='청구').amount,90000));
+test('미승인 추가 작업이 있으면 작업 완료 차단',()=>assert.throws(()=>apply(seed(),{type:'complete',jobId:'PN-1024',notes:'완료'}),/승인되지 않은/));
+test('미승인 추가 작업의 자재 사용 차단',()=>assert.throws(()=>apply(seed(),{type:'consume',jobId:'PN-1024',reservationId:'r1',qty:1}),/승인되지 않은/));
+test('추가 작업 승인 기록 후 승인 위험 해소',()=>{const s=apply(seed(),{type:'approveExtra',jobId:'PN-1024',extraId:'e1',...approval});assert.ok(!risks(s).some(x=>x.type==='승인'));assert.equal(s.jobs[0].extras[0].approval.name,approval.name);});
+test('승인 근거가 비어 있으면 저장 차단',()=>assert.throws(()=>apply(seed(),{type:'approveExtra',jobId:'PN-1024',extraId:'e1',name:'고객',evidence:' '}),/승인 근거/));
+test('중복 추가 승인 차단',()=>assert.throws(()=>apply(seed(),{type:'approveExtra',jobId:'PN-1026',extraId:'e2',...approval}),/이미 승인/));
+test('현장 확인 없는 견적 저장 차단',()=>assert.throws(()=>apply(seed(),{type:'quote',jobId:'PN-1029',amount:100}),/현장 확인/));
+test('견적 수정 시 승인 무효화 및 버전 증가',()=>{const r=ready();const s=r.act({type:'quote',amount:120000});assert.equal(s.jobs[0].quoteVersion,2);assert.equal(s.jobs[0].approval,undefined);assert.throws(()=>r.act({type:'assign',team:s.teams[0],start:'2026-11-03T09:00',end:'2026-11-03T10:00'}),/최신 견적/);});
+test('동일 팀 중첩 일정 차단',()=>assert.throws(()=>apply(seed(),{type:'assign',jobId:'PN-1025',team:'1팀 · 김반장',start:'2026-11-02T10:00',end:'2026-11-02T14:00'}),/일정 충돌/));
+test('끝과 시작이 같은 일정은 허용',()=>{assert.equal(overlap('09:00','10:00','10:00','11:00'),false);const s=apply(seed(),{type:'assign',jobId:'PN-1025',team:'1팀 · 김반장',start:'2026-11-02T13:00',end:'2026-11-02T15:00'});assert.ok(!risks(s).some(x=>x.type==='일정'));});
+test('다른 팀으로 재배정하면 일정 위험 해소',()=>{const s=apply(seed(),{type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start:'2026-11-02T11:00',end:'2026-11-02T15:00'});assert.ok(!risks(s).some(x=>x.type==='일정'));});
+test('거꾸로 입력한 일정 차단',()=>assert.throws(()=>apply(seed(),{type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start:'2026-11-02T15:00',end:'2026-11-02T11:00'}),/시작·종료/));
+test('동일 현장 동일 자재 중복 예약 차단',()=>assert.throws(()=>apply(seed(),{type:'reserve',jobId:'PN-1025',materialId:'m1',qty:1}),/이미 예약/));
+test('실재고 초과 예약 차단',()=>assert.throws(()=>apply(seed(),{type:'reserve',jobId:'PN-1025',materialId:'m2',qty:13}),/재고 부족/));
+test('재고와 동일한 수량의 예약은 허용',()=>{const s=apply(seed(),{type:'reserve',jobId:'PN-1025',materialId:'m2',qty:12});assert.equal(reserved(s,'m2'),12);});
+test('예약 해제 후 가용 재고 복구',()=>{const s=apply(seed(),{type:'release',jobId:'PN-1025',reservationId:'r2'});assert.equal(reserved(s,'m1'),8);assert.equal(s.materials[0].stock,10);assert.ok(!risks(s).some(x=>x.type==='자재'));});
+test('입고 기록 후 초과 예약 위험 해소',()=>{const s=apply(seed(),{type:'stock',materialId:'m1',qty:4});assert.equal(s.materials[0].stock,14);assert.ok(!risks(s).some(x=>x.type==='자재'));});
+test('0, 음수, 소수, NaN 수량 차단',()=>{for(const qty of [0,-1,1.5,NaN])assert.throws(()=>apply(seed(),{type:'stock',materialId:'m1',qty}),/정수/);});
+test('자재 사용은 실재고와 예약 잔량을 함께 차감',()=>{const r=ready();r.act({type:'assign',team:r.s.teams[0],start:'2026-11-03T09:00',end:'2026-11-03T12:00'});r.act({type:'reserve',materialId:'m1',qty:5});r.act({type:'start'});const rid=r.s.reservations[0].id;r.act({type:'consume',reservationId:rid,qty:3});assert.equal(r.s.materials[0].stock,27);assert.equal(reserved(r.s,'m1'),2);assert.throws(()=>r.act({type:'consume',reservationId:rid,qty:3}),/초과/);});
+test('청구 누락 상태의 입금·정산 차단',()=>assert.throws(()=>apply(seed(),{type:'payment',jobId:'PN-1026',amount:1200000}),/청구 누락/));
+test('청구 갱신은 승인된 추가 작업을 반영하며 중복 생성하지 않음',()=>{let s=apply(seed(),{type:'invoice',jobId:'PN-1026'});assert.equal(s.jobs[2].invoice.lines.length,2);assert.equal(total(s.jobs[2]),1290000);s=apply(s,{type:'invoice',jobId:'PN-1026'});assert.equal(s.jobs[2].invoice.lines.length,2);assert.equal(s.jobs[2].invoice.number,'INV-1026');assert.ok(!risks(s).some(x=>x.type==='청구'));});
+test('부분 입금 후 전액 입금 시 정산 완료',()=>{let s=apply(seed(),{type:'invoice',jobId:'PN-1026'});s=apply(s,{type:'payment',jobId:'PN-1026',amount:1000000});assert.equal(s.jobs[2].stage,5);s=apply(s,{type:'payment',jobId:'PN-1026',amount:290000});assert.equal(s.jobs[2].stage,6);});
+test('미수금을 초과하는 입금 차단',()=>{const s=apply(seed(),{type:'invoice',jobId:'PN-1026'});assert.throws(()=>apply(s,{type:'payment',jobId:'PN-1026',amount:1290001}),/미수 잔액/);});
+test('정산 완료 현장 재변경 차단',()=>assert.throws(()=>apply(seed(),{type:'extra',jobId:'PN-1023',title:'추가',amount:100}),/정산 완료/));
+test('실패한 작업은 원본 데이터를 변경하지 않음',()=>{const s=seed(),before=JSON.stringify(s);assert.throws(()=>apply(s,{type:'complete',jobId:'PN-1024',notes:'완료'}));assert.equal(JSON.stringify(s),before);});
+test('정상 전체 흐름: 문의 → 현장 → 견적 → 승인 → 배정 → 자재 → 추가 승인 → 완료 → 청구 → 입금',()=>{
+ const r=ready();r.act({type:'assign',team:r.s.teams[0],start:'2026-11-03T09:00',end:'2026-11-03T12:00'});r.act({type:'reserve',materialId:'m1',qty:5});r.act({type:'start'});
+ r.act({type:'extra',title:'밸브 교체',amount:30000});r.act({type:'approveExtra',extraId:r.s.jobs[0].extras[0].id,...approval});r.act({type:'consume',reservationId:r.s.reservations[0].id,qty:3});
+ r.act({type:'complete',notes:'통수 시험, 고객 검수 완료'});assert.equal(reserved(r.s,'m1'),0);assert.ok(risks(r.s).some(x=>x.type==='청구'));
+ r.act({type:'invoice'});r.act({type:'payment',amount:130000});assert.equal(r.s.jobs[0].stage,6);assert.equal(r.s.jobs[0].paid,130000);assert.equal(risks(r.s).length,0);assert.equal(r.s.log.length,13);
+});
