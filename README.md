@@ -20,8 +20,8 @@
 5. 표시된 로컬 주소에서 로그인 (로컬 개발 전용 모의 계정)
 
 ## 검증
-- node --test tests/domain.test.mjs (28개)
-- 로컬 서버 실행 후 node --test tests/api.test.mjs (9개)
+- node --test tests/domain.test.mjs (31개)
+- 로컬 서버 실행 후 node --test tests/api.test.mjs (11개)
 - node node_modules/typescript/bin/tsc --noEmit
 - npm run build
 API 테스트는 로컬 테스트 DB에 가상 현장과 입고 기록을 추가합니다. 프로덕션에는 실행하지 않습니다.

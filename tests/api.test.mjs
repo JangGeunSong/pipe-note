@@ -12,6 +12,23 @@ test('API: 일정 충돌 차단',async()=>{const x=await get();const r=await pos
 test('API: 청구 누락 정산 차단',async()=>{const x=await get();const r=await post({type:'payment',jobId:'PN-1026',amount:1200000},x.revision);assert.equal(r.status,400);assert.match(r.error,/청구 누락/);});
 test('API: 동시 요청 2개 중 1개만 저장, 나머지 409',async()=>{const x=await get(),qty=x.state.materials[1].stock;const results=await Promise.all([post({type:'stock',materialId:'m2',qty:1},x.revision),post({type:'stock',materialId:'m2',qty:1},x.revision)]);assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);const next=await get();assert.equal(next.revision,x.revision+1);assert.equal(next.state.materials[1].stock,qty+1);});
 test('API: 오래된 화면의 저장 차단 및 최신 데이터 반환',async()=>{const x=await get();const r=await post({type:'stock',materialId:'m2',qty:1},x.revision-1);assert.equal(r.status,409);assert.equal(r.revision,x.revision);assert.deepEqual(r.state,x.state);});
+test('API: 잘못된 요청 구조에 일관된 400 응답, 데이터 변경 없음',async()=>{
+ const before=await get();
+ const malformed=[null,[],true,42,'request',{}, {revision:before.revision},
+  {revision:before.revision,action:null},{revision:before.revision,action:[]},
+  {revision:before.revision,action:{}},{revision:before.revision,action:{type:12}},
+  {revision:before.revision,action:{type:' '}},
+  ...[-1,1.5,'0',Number.MAX_SAFE_INTEGER+1].map(revision=>({revision,action:{type:'stock',materialId:'m2',qty:1}}))];
+ for(const payload of malformed){
+  const r=await fetch(origin+'/api/state',{method:'POST',headers:auth,body:JSON.stringify(payload)});
+  assert.equal(r.status,400,JSON.stringify(payload));assert.equal((await r.json()).error,'잘못된 요청입니다.');
+ }
+ const after=await get();assert.equal(after.revision,before.revision);assert.deepEqual(after.state,before.state);
+});
+test('API: 존재하지 않는 날짜 배정 차단 및 버전 보존',async()=>{
+ const before=await get();const r=await post({type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start:'2026-02-30T09:00',end:'2026-03-01T12:00'},before.revision);
+ assert.equal(r.status,400);assert.match(r.error,/시작·종료/);assert.equal((await get()).revision,before.revision);
+});
 test('API: 저장된 전체 업무 흐름 재조회 검증',async()=>{
  let x=await get();const send=async(a)=>{const r=await post(a,x.revision);assert.equal(r.status,200,r.error);x=r;};
  await send({type:'create',customer:'API 검증 '+Date.now(),phone:'010-0000-0000',address:'가상 주소',title:'급수관 교체'});const jobId=x.state.jobs[0].id;

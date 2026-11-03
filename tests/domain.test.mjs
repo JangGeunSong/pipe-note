@@ -22,6 +22,27 @@ test('동일 팀 중첩 일정 차단',()=>assert.throws(()=>apply(seed(),{type:
 test('끝과 시작이 같은 일정은 허용',()=>{assert.equal(overlap('09:00','10:00','10:00','11:00'),false);const s=apply(seed(),{type:'assign',jobId:'PN-1025',team:'1팀 · 김반장',start:'2026-11-02T13:00',end:'2026-11-02T15:00'});assert.ok(!risks(s).some(x=>x.type==='일정'));});
 test('다른 팀으로 재배정하면 일정 위험 해소',()=>{const s=apply(seed(),{type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start:'2026-11-02T11:00',end:'2026-11-02T15:00'});assert.ok(!risks(s).some(x=>x.type==='일정'));});
 test('거꾸로 입력한 일정 차단',()=>assert.throws(()=>apply(seed(),{type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start:'2026-11-02T15:00',end:'2026-11-02T11:00'}),/시작·종료/));
+test('달력에 없는 날짜는 시작·종료 모두 차단하고 원본을 보존',()=>{
+ const invalidDates=['2026-02-29','2026-02-30','2026-04-31','1900-02-29','0000-01-01'];
+ for(const date of invalidDates){
+  const s=seed(),before=JSON.stringify(s);
+  for(const [start,end] of [[date+'T09:00','2027-01-01T12:00'],['0001-01-01T09:00',date+'T12:00']]){
+   assert.throws(()=>apply(s,{type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start,end}),/시작·종료/,date);
+   assert.equal(JSON.stringify(s),before);
+  }
+ }
+});
+test('24시·범위 초과 분·시간대 접미사 입력 차단',()=>{
+ for(const start of ['2026-11-02T24:00','2026-11-02T09:60','2026-11-02T09:00Z','2026-11-02T09:00+09:00']){
+  assert.throws(()=>apply(seed(),{type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start,end:'2026-11-03T12:00'}),/시작·종료/);
+ }
+});
+test('윤년 2월 29일과 월말을 넘는 정상 일정 허용',()=>{
+ for(const [start,end] of [['2028-02-29T09:00','2028-02-29T12:00'],['2000-02-29T23:00','2000-03-01T01:00'],['2026-04-30T23:30','2026-05-01T00:30']]){
+  const s=apply(seed(),{type:'assign',jobId:'PN-1025',team:'2팀 · 박기사',start,end});
+  assert.equal(s.jobs[1].start,start);assert.equal(s.jobs[1].end,end);
+ }
+});
 test('동일 현장 동일 자재 중복 예약 차단',()=>assert.throws(()=>apply(seed(),{type:'reserve',jobId:'PN-1025',materialId:'m1',qty:1}),/이미 예약/));
 test('실재고 초과 예약 차단',()=>assert.throws(()=>apply(seed(),{type:'reserve',jobId:'PN-1025',materialId:'m2',qty:13}),/재고 부족/));
 test('재고와 동일한 수량의 예약은 허용',()=>{const s=apply(seed(),{type:'reserve',jobId:'PN-1025',materialId:'m2',qty:12});assert.equal(reserved(s,'m2'),12);});

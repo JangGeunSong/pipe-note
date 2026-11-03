@@ -13,6 +13,13 @@ const fail=(s:string):never=>{throw new Error(s);};
 const text=(v:unknown,label:string,max=1000)=>typeof v==='string'&&v.trim()&&v.trim().length<=max?v.trim():fail(`${label}을(를) 입력해 주세요. (최대 ${max}자)`);
 const number=(v:unknown,label:string,min=0)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>=min&&v<=1000000000?v:fail(`${label}은(는) ${min} 이상의 정수여야 합니다.`);
 export const overlap=(a:string,b:string,c:string,d:string)=>a<d&&c<b;
+function validScheduleTime(value:string):boolean {
+ if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)||value.startsWith('0000-'))return false;
+ // UTC is used only to validate the calendar fields, independent of host timezone.
+ // Stored values remain the user's KST wall-clock input.
+ const date=new Date(value+':00Z');
+ return !Number.isNaN(date.getTime())&&date.toISOString().slice(0,16)===value;
+}
 export const reserved=(s:State,mid:string)=>s.reservations.filter(r=>r.materialId===mid&&!r.released).reduce((n,r)=>n+r.qty-r.used,0);
 export function billable(j:Job):Line[]{return [{key:'base',title:'기본 공사 · '+j.title,amount:j.quote},...j.extras.filter(x=>x.approval).map(x=>({key:x.id,title:x.title,amount:x.amount}))];}
 export const total=(j:Job)=>billable(j).reduce((n,l)=>n+l.amount,0);
@@ -52,7 +59,7 @@ export function apply(state:State,a:Action,actor='관리자',at=new Date().toISO
  case 'survey':if(j.stage>2)fail('작업 배정 전 현장에서만 현장 확인을 수정할 수 있습니다.');j.survey=text(a.notes,'현장 확인 내용');j.stage=Math.max(j.stage,1);message='현장 확인 기록';break;
  case 'quote':if(!j.survey)fail('현장 확인 내용을 먼저 기록해 주세요.');if(j.stage>2)fail('배정 이후 금액 변경은 추가 작업으로 등록해 주세요.');j.quote=number(a.amount,'견적 금액',1);j.quoteVersion++;delete j.approval;j.stage=2;message=`견적 v${j.quoteVersion} 저장 · 기존 승인 초기화`;break;
  case 'approve':if(j.stage!==2||!j.quote)fail('견적 저장 후 승인을 기록해 주세요.');j.approval=approval();message=`견적 v${j.quoteVersion} 고객 승인 기록`;break;
- case 'assign':{approved();if(j.stage>=5)fail('완료된 작업의 일정은 변경할 수 없습니다.');const start=text(a.start,'시작 시간'),end=text(a.end,'종료 시간'),team=text(a.team,'작업팀');if(!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(start)||!/^\d{4}-\d\d-\d\dT\d\d:\d\d$/.test(end)||Number.isNaN(Date.parse(start))||Number.isNaN(Date.parse(end))||start>=end)fail('올바른 시작·종료 시간을 입력해 주세요.');if(!s.teams.includes(team))fail('등록된 작업팀을 선택해 주세요.');const conflict=s.jobs.find(x=>x.id!==j.id&&x.team===team&&x.stage<5&&x.start&&x.end&&overlap(start,end,x.start,x.end));if(conflict)fail(`일정 충돌: ${team}은(는) ${conflict.customer}에 이미 배정되어 있습니다.`);Object.assign(j,{start,end,team,stage:Math.max(j.stage,3)});message='작업팀 · 일정 배정';break;}
+ case 'assign':{approved();if(j.stage>=5)fail('완료된 작업의 일정은 변경할 수 없습니다.');const start=text(a.start,'시작 시간'),end=text(a.end,'종료 시간'),team=text(a.team,'작업팀');if(!validScheduleTime(start)||!validScheduleTime(end)||start>=end)fail('올바른 시작·종료 시간을 입력해 주세요.');if(!s.teams.includes(team))fail('등록된 작업팀을 선택해 주세요.');const conflict=s.jobs.find(x=>x.id!==j.id&&x.team===team&&x.stage<5&&x.start&&x.end&&overlap(start,end,x.start,x.end));if(conflict)fail(`일정 충돌: ${team}은(는) ${conflict.customer}에 이미 배정되어 있습니다.`);Object.assign(j,{start,end,team,stage:Math.max(j.stage,3)});message='작업팀 · 일정 배정';break;}
  case 'start':approved();extraApproved();if(j.stage!==3)fail('작업 배정 후 시작할 수 있습니다.');if(risks(s).some(r=>r.jobIds.includes(j.id)&&['일정','자재'].includes(r.type)))fail('일정·자재 충돌을 해결한 뒤 작업을 시작해 주세요.');j.stage=4;message='현장 작업 시작';break;
  case 'extra':if(j.stage<2||j.stage>=5)fail('견적 이후부터 작업 완료 전까지 추가 작업을 등록할 수 있습니다.');j.extras.push({id:id(),title:text(a.title,'추가 작업명',120),amount:number(a.amount,'추가 금액',1)});message='추가 작업 등록 · 고객 승인 대기';break;
  case 'approveExtra':{const e=j.extras.find(x=>x.id===a.extraId)??fail('추가 작업을 찾을 수 없습니다.');if(e.approval)fail('이미 승인된 추가 작업입니다.');e.approval=approval();message=`추가 작업 승인 기록 · ${e.title}`;break;}
